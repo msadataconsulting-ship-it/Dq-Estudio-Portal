@@ -3,8 +3,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { User, Client, Task, UserRole, TaskStatus, TaxType, Ticket, TicketStatus } from './types';
 import { INITIAL_STAFF, INITIAL_TASKS } from './constants';
 // Import the Gemini service to provide AI insights
-import { getSmartInsights } from './services/gemini-service';
-import { supabase } from './services/supabase-client';
+import { getSmartInsights } from './gemini-service';
+import { supabase } from './supabase-client';
 import { 
   LogOut, 
   Calendar,
