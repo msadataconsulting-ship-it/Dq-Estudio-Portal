@@ -123,3 +123,12 @@ export interface Task {
   notes?: string;
   attachedFileNames?: string[];
 }
+
+export interface PlanningTask {
+  id: string;
+  cliente: string;
+  responsable: string;
+  fecha: string;
+  tarea: string;
+  estado: string;
+}
