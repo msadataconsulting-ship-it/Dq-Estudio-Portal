@@ -4,6 +4,7 @@ import { User, Client, Task, UserRole, TaskStatus, TaxType, Ticket, TicketStatus
 import { INITIAL_STAFF, INITIAL_TASKS } from './constants';
 // Import the Gemini service to provide AI insights
 import { getSmartInsights } from './services/geminiService';
+import { supabase } from './services/supabaseClient';
 import { 
   LogOut, 
   Calendar,
@@ -103,18 +104,38 @@ const App: React.FC = () => {
   const [docPeriodFilter, setDocPeriodFilter] = useState('Todos');
   const [docTypeFilter, setDocTypeFilter] = useState('Todos');
 
-  // Load tickets from localStorage on init
-  useEffect(() => {
-    const savedTickets = localStorage.getItem('dq_tickets');
-    if (savedTickets) {
-      setTickets(JSON.parse(savedTickets));
-    }
-  }, []);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  // Save tickets to localStorage whenever they change
+  // Load tickets from Supabase on init and when user changes
+  const fetchTickets = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tickets')
+        .select('*')
+        .order('createdAt', { ascending: false });
+      
+      if (error) throw error;
+      if (data) setTickets(data as Ticket[]);
+    } catch (err) {
+      console.error('Error fetching tickets:', err);
+    }
+  };
+
   useEffect(() => {
-    localStorage.setItem('dq_tickets', JSON.stringify(tickets));
-  }, [tickets]);
+    fetchTickets();
+
+    // Subscribe to real-time changes
+    const channel = supabase
+      .channel('tickets_changes')
+      .on('postgres_changes', { event: '*', table: 'tickets' }, () => {
+        fetchTickets();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const normalizeStr = (str: any) => {
     if (!str) return '';
@@ -160,7 +181,9 @@ const App: React.FC = () => {
   const syncData = async () => {
     setLoading(true);
     try {
+      console.log("Syncing clients from:", CLIENTES_URL);
       const resCl = await fetch(CLIENTES_URL);
+      if (!resCl.ok) throw new Error(`Error al obtener clientes: ${resCl.statusText}`);
       const csvCl = await resCl.text();
       const parsedCl = parseCSV(csvCl);
       
@@ -205,7 +228,9 @@ const App: React.FC = () => {
         setClients(mappedClients);
       }
 
+      console.log("Syncing documentation from:", DOCUMENTACION_URL);
       const resDoc = await fetch(DOCUMENTACION_URL);
+      if (!resDoc.ok) throw new Error(`Error al obtener documentación: ${resDoc.statusText}`);
       const csvDoc = await resDoc.text();
       const parsedDoc = parseCSV(csvDoc);
       
@@ -231,8 +256,9 @@ const App: React.FC = () => {
         });
         setAllDocuments(transformed);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error("Sync Error:", e);
+      alert(`Error de sincronización: ${e.message || "Error desconocido"}. Verifique que las hojas de cálculo estén publicadas como CSV.`);
     } finally {
       setLoading(false);
     }
@@ -273,7 +299,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCreateTicket = (e: React.FormEvent) => {
+  const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser || !currentClientData) return;
 
@@ -288,17 +314,35 @@ const App: React.FC = () => {
       updatedAt: new Date().toISOString()
     };
 
-    setTickets([newTicketObj, ...tickets]);
-    setNewTicket({ title: '', description: '' });
-    setIsTicketModalOpen(false);
+    try {
+      const { error } = await supabase.from('tickets').insert([newTicketObj]);
+      if (error) throw error;
+      
+      setNewTicket({ title: '', description: '' });
+      setIsTicketModalOpen(false);
+      // fetchTickets() will be called by the real-time subscription
+    } catch (err) {
+      console.error('Error creating ticket:', err);
+      alert('Error al crear el ticket. Por favor reintente.');
+    }
   };
 
-  const handleUpdateTicketStatus = (ticketId: string, newStatus: TicketStatus) => {
-    setTickets(tickets.map(t => 
-      t.id === ticketId 
-        ? { ...t, status: newStatus, updatedAt: new Date().toISOString() } 
-        : t
-    ));
+  const handleUpdateTicketStatus = async (ticketId: string, newStatus: TicketStatus) => {
+    try {
+      const { error } = await supabase
+        .from('tickets')
+        .update({ 
+          status: newStatus, 
+          updatedAt: new Date().toISOString() 
+        })
+        .eq('id', ticketId);
+      
+      if (error) throw error;
+      // fetchTickets() will be called by the real-time subscription
+    } catch (err) {
+      console.error('Error updating ticket:', err);
+      alert('Error al actualizar el ticket.');
+    }
   };
 
   // Function to call Gemini for smart insights
@@ -598,8 +642,8 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-[#1e2128] rounded-[3rem] border border-white/5 overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
+      <div className="bg-[#1e2128] rounded-[2rem] md:rounded-[3rem] border border-white/5 overflow-hidden shadow-2xl">
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-[#16191f] border-b border-white/5">
               <tr>
@@ -656,6 +700,41 @@ const App: React.FC = () => {
             </tbody>
           </table>
         </div>
+
+        {/* Mobile View for Documentation */}
+        <div className="md:hidden divide-y divide-white/5">
+          {filteredDocs.length > 0 ? filteredDocs.map(doc => (
+            <div key={doc.id} className="p-6 space-y-4">
+              <div className="flex justify-between items-start">
+                <div className="space-y-1">
+                  {currentUser?.role === UserRole.ADMIN && (
+                    <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest">{doc.clientName}</p>
+                  )}
+                  <h4 className="text-[13px] font-black text-white uppercase tracking-tight leading-tight">{doc.name}</h4>
+                  <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase">
+                    <Calendar size={12} /> {doc.periodo}
+                  </div>
+                </div>
+                <div className="p-2 bg-amber-500/10 rounded-xl text-amber-500">
+                  <FileText size={18} />
+                </div>
+              </div>
+              <a 
+                href={doc.url} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="flex items-center justify-center gap-3 w-full py-4 bg-white/5 text-slate-300 rounded-2xl text-[10px] font-black uppercase tracking-widest active:bg-amber-600 active:text-white transition-all"
+              >
+                <ExternalLink size={14} /> Ver en Google Drive
+              </a>
+            </div>
+          )) : (
+            <div className="py-20 text-center opacity-40">
+              <FolderOpen size={48} className="mx-auto mb-4 text-slate-800" />
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-600 px-10">No hay documentos.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -707,6 +786,11 @@ const App: React.FC = () => {
            </p>
         </header>
 
+        <Section title="Credenciales de Acceso" icon={Key}>
+          <Field label="Mail de Acceso" value={c.email} />
+          <Field label="Contraseña de Acceso" value={c.appPassword} isCode />
+        </Section>
+
         <Section title="General y Ubicación" icon={Building2}>
           <Field label="Actividad Principal" value={c.mainActivity} fullWidth />
           <Field label="Dirección" value={c.address} />
@@ -742,11 +826,11 @@ const App: React.FC = () => {
     if (!selectedClient) return null;
     const c = selectedClient;
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-12 animate-in fade-in zoom-in duration-300">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 md:p-12 animate-in fade-in zoom-in duration-300">
         <div className="absolute inset-0 bg-black/90 backdrop-blur-xl" onClick={() => setSelectedClient(null)} />
-        <div className="relative w-full max-w-6xl max-h-[90vh] bg-[#1e2128] border border-white/10 rounded-[3.5rem] shadow-2xl overflow-hidden flex flex-col">
-          <div className="bg-[#16191f] px-12 py-10 border-b border-white/5 flex justify-between items-start">
-            <div>
+        <div className="relative w-full h-full md:h-auto md:max-w-6xl md:max-h-[90vh] bg-[#1e2128] md:border md:border-white/10 md:rounded-[3.5rem] shadow-2xl overflow-hidden flex flex-col">
+          <div className="bg-[#16191f] px-8 md:px-12 py-8 md:py-10 border-b border-white/5 flex justify-between items-start">
+            <div className="pr-12">
               <div className="flex items-center gap-3 mb-3">
                 <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.2em] ${c.status === 'Activo' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
                   {c.status}
@@ -755,18 +839,21 @@ const App: React.FC = () => {
                   {c.type}
                 </span>
               </div>
-              <h3 className="text-3xl font-black text-white uppercase tracking-tighter leading-none">{c.name}</h3>
-              <p className="text-[12px] font-bold text-slate-500 mt-3 flex items-center gap-3">
-                <Hash size={14} className="text-amber-500/50" /> 
-                <span className="font-mono">CUIT: {c.cuit}</span> 
-                {c.cuitSociedad && <><span className="opacity-20">|</span> <span className="font-mono">SOCIEDAD: {c.cuitSociedad}</span></>}
+              <h3 className="text-2xl md:text-3xl font-black text-white uppercase tracking-tighter leading-none">{c.name}</h3>
+              <p className="text-[11px] md:text-[12px] font-bold text-slate-500 mt-3 flex flex-wrap items-center gap-3">
+                <span className="flex items-center gap-2"><Hash size={14} className="text-amber-500/50" /> <span className="font-mono">CUIT: {c.cuit}</span></span>
+                {c.cuitSociedad && <><span className="hidden md:inline opacity-20">|</span> <span className="font-mono">SOCIEDAD: {c.cuitSociedad}</span></>}
               </p>
             </div>
-            <button onClick={() => setSelectedClient(null)} className="p-4 bg-white/5 rounded-3xl text-slate-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
-              <X size={24} />
+            <button onClick={() => setSelectedClient(null)} className="p-4 bg-white/5 rounded-2xl md:rounded-3xl text-slate-500 hover:text-white hover:bg-white/10 transition-all active:scale-90">
+              <X size={20} md:size={24} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-12 space-y-12 custom-scrollbar">
+          <div className="flex-1 overflow-y-auto p-8 md:p-12 space-y-12 custom-scrollbar">
+            <Section title="Credenciales de Acceso" icon={Key}>
+              <Field label="Mail de Acceso" value={c.email} />
+              <Field label="Contraseña de Acceso" value={c.appPassword} isCode />
+            </Section>
             <Section title="General y Ubicación" icon={Building2}>
               <Field label="Actividad Principal" value={c.mainActivity} fullWidth />
               <Field label="Dirección" value={c.address} />
@@ -795,7 +882,7 @@ const App: React.FC = () => {
 
   const renderNomina = () => (
     <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-      <div className="flex flex-col md:flex-row gap-4 justify-between items-center bg-[#1e2128] p-4 rounded-3xl border border-white/5">
+      <div className="flex flex-col md:flex-row gap-4 justify-between items-center bg-[#1e2128] p-4 rounded-[2rem] md:rounded-3xl border border-white/5">
         <div className="flex items-center gap-3 bg-[#0f1115] px-6 py-4 rounded-2xl border border-white/5 flex-1 w-full group">
           <Search size={20} className="text-slate-600 group-focus-within:text-amber-500 transition-colors" />
           <input 
@@ -806,14 +893,15 @@ const App: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
-        <div className="flex items-center gap-2 p-1.5 bg-[#0f1115] rounded-2xl border border-white/5">
+        <div className="flex items-center gap-1 p-1 bg-[#0f1115] rounded-2xl border border-white/5 w-full md:w-auto overflow-x-auto no-scrollbar">
           {(['Todos', 'Activo', 'Baja'] as const).map(f => (
-            <button key={f} onClick={() => setStatusFilter(f)} className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase transition-all tracking-widest ${statusFilter === f ? 'bg-white text-slate-900 shadow-xl' : 'text-slate-600 hover:text-slate-400'}`}>{f}</button>
+            <button key={f} onClick={() => setStatusFilter(f)} className={`flex-1 md:flex-none px-6 md:px-8 py-3 rounded-xl text-[9px] md:text-[10px] font-black uppercase transition-all tracking-widest whitespace-nowrap ${statusFilter === f ? 'bg-white text-slate-900 shadow-xl' : 'text-slate-600 hover:text-slate-400'}`}>{f}</button>
           ))}
         </div>
       </div>
-      <div className="bg-[#1e2128] rounded-[3rem] border border-white/5 overflow-hidden shadow-2xl">
-        <div className="overflow-x-auto">
+
+      <div className="bg-[#1e2128] rounded-[2rem] md:rounded-[3rem] border border-white/5 overflow-hidden shadow-2xl">
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left">
             <thead className="bg-[#16191f] border-b border-white/5">
               <tr>
@@ -843,6 +931,31 @@ const App: React.FC = () => {
               ))}
             </tbody>
           </table>
+        </div>
+
+        {/* Mobile View for Nomina */}
+        <div className="md:hidden divide-y divide-white/5">
+          {filteredClients.map(c => (
+            <div key={c.id} onClick={() => setSelectedClient(c)} className="p-6 space-y-4 active:bg-white/5 transition-colors">
+              <div className="flex justify-between items-start">
+                <div className="space-y-1 pr-4">
+                  <h4 className="text-[14px] font-black text-white uppercase tracking-tight leading-tight">{c.name}</h4>
+                  <p className="text-[10px] font-bold text-slate-600 font-mono">{c.cuit}</p>
+                </div>
+                <span className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest ${c.status === 'Activo' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                  {c.status}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="text-[9px] font-black text-slate-500 uppercase bg-white/5 px-3 py-1 rounded-lg">{c.type}</span>
+                {c.phone && (
+                  <span className="text-[9px] font-bold text-slate-600 uppercase bg-white/5 px-3 py-1 rounded-lg flex items-center gap-1">
+                    <Phone size={10} /> {c.phone}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -901,7 +1014,7 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex min-h-screen bg-[#0f1115] text-slate-200">
+    <div className="flex min-h-screen bg-[#0f1115] text-slate-200 pb-24 lg:pb-0">
       <aside className="w-80 bg-[#1e2128] border-r border-white/5 hidden lg:flex flex-col p-10 sticky top-0 h-screen z-50 shadow-2xl">
         <div className="mb-20"><DQLogo size={100} /></div>
         <nav className="flex-1 space-y-6">
@@ -940,21 +1053,73 @@ const App: React.FC = () => {
         </button>
       </aside>
 
-      <main className="flex-1 p-8 lg:p-20 overflow-y-auto">
+      {/* Mobile Bottom Navigation */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 bg-[#1e2128]/80 backdrop-blur-xl border-t border-white/5 z-[100] flex justify-around items-center p-4">
+        {currentUser.role === UserRole.ADMIN ? (
+          <>
+            {[
+              { id: 'dashboard', icon: <BarChart3 size={20}/>, label: 'Panel' },
+              { id: 'nomina', icon: <Briefcase size={20}/>, label: 'Nómina' },
+              { id: 'documentation', icon: <FolderOpen size={20}/>, label: 'Docs' },
+              { id: 'service-desk', icon: <MessageSquare size={20}/>, label: 'Desk' },
+            ].map(item => (
+              <button 
+                key={item.id} 
+                onClick={() => setCurrentTab(item.id)}
+                className={`flex flex-col items-center gap-1 transition-all ${currentTab === item.id ? 'text-amber-500' : 'text-slate-600'}`}
+              >
+                {item.icon}
+                <span className="text-[8px] font-black uppercase tracking-widest">{item.label}</span>
+              </button>
+            ))}
+          </>
+        ) : (
+          <>
+            {[
+              { id: 'documentation', icon: <FolderOpen size={20}/>, label: 'Docs' },
+              { id: 'service-desk', icon: <MessageSquare size={20}/>, label: 'Desk' },
+              { id: 'mis-datos', icon: <UserIcon size={20}/>, label: 'Perfil' },
+            ].map(item => (
+              <button 
+                key={item.id} 
+                onClick={() => setCurrentTab(item.id)}
+                className={`flex flex-col items-center gap-1 transition-all ${currentTab === item.id ? 'text-amber-500' : 'text-slate-600'}`}
+              >
+                {item.icon}
+                <span className="text-[8px] font-black uppercase tracking-widest">{item.label}</span>
+              </button>
+            ))}
+          </>
+        )}
+        <button 
+          onClick={() => { setCurrentUser(null); setLoginPassword(""); setLoginId(""); }}
+          className="flex flex-col items-center gap-1 text-slate-600 active:text-rose-500"
+        >
+          <LogOut size={20} />
+          <span className="text-[8px] font-black uppercase tracking-widest">Salir</span>
+        </button>
+      </nav>
+
+      <main className="flex-1 p-6 lg:p-20 overflow-y-auto">
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-12 gap-8">
-          <div>
-            <h2 className="text-5xl font-black text-white uppercase tracking-tighter mb-4">
-              {currentTab === 'dashboard' ? 'Panel Administrador' : currentTab === 'nomina' ? 'Nómina Global' : currentTab === 'documentation' ? 'Archivo Digital' : currentTab === 'mis-datos' ? 'Mi Perfil' : currentTab === 'service-desk' ? 'Service Desk' : 'Agenda Fiscal'}
-            </h2>
-            <div className="flex items-center gap-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">
-              <span className="flex items-center gap-2"><Shield size={14} className="text-amber-500" /> DQ Estudio Integral</span>
-              <span className="w-1 h-1 bg-slate-800 rounded-full"></span>
-              <span>{currentUser.role === UserRole.ADMIN ? 'Panel Administrativo' : 'Portal del Cliente'}</span>
+          <div className="w-full flex justify-between items-start">
+            <div>
+              <h2 className="text-3xl md:text-5xl font-black text-white uppercase tracking-tighter mb-4">
+                {currentTab === 'dashboard' ? 'Panel Administrador' : currentTab === 'nomina' ? 'Nómina Global' : currentTab === 'documentation' ? 'Archivo Digital' : currentTab === 'mis-datos' ? 'Mi Perfil' : currentTab === 'service-desk' ? 'Service Desk' : 'Agenda Fiscal'}
+              </h2>
+              <div className="flex items-center gap-4 text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">
+                <span className="flex items-center gap-2"><Shield size={14} className="text-amber-500" /> DQ Estudio Integral</span>
+                <span className="hidden md:inline w-1 h-1 bg-slate-800 rounded-full"></span>
+                <span className="hidden md:inline">{currentUser.role === UserRole.ADMIN ? 'Panel Administrativo' : 'Portal del Cliente'}</span>
+              </div>
+            </div>
+            <div className="lg:hidden">
+              <DQLogo size={50} showText={false} />
             </div>
           </div>
-          <button onClick={syncData} className="p-5 bg-white/5 rounded-3xl text-amber-500 hover:bg-amber-600 hover:text-white transition-all shadow-2xl active:scale-90 flex items-center gap-3 border border-white/5">
+          <button onClick={syncData} className="w-full md:w-auto p-5 bg-white/5 rounded-3xl text-amber-500 hover:bg-amber-600 hover:text-white transition-all shadow-2xl active:scale-90 flex items-center justify-center gap-3 border border-white/5">
             {loading ? <Loader2 size={24} className="animate-spin" /> : <RefreshCw size={24} />}
-            <span className="hidden md:block text-[10px] font-black uppercase tracking-widest pr-2">Actualizar</span>
+            <span className="text-[10px] font-black uppercase tracking-widest pr-2">Actualizar Datos</span>
           </button>
         </header>
 
