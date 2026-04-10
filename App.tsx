@@ -318,19 +318,25 @@ const App: React.FC = () => {
       if (!parsedPl.isHtml) {
         const mappedPlanning: PlanningTask[] = parsedPl.rows
           .filter(row => (row['Cliente'] || row['CLIENTE'])?.trim())
-          .map((row, i) => ({
-          id: `pl-${i}`,
-          fecha: row['Fecha'] || '',
-          cuit: row['CUIT'] || '',
-          tipoCliente: row['TIPO CLIENTE'] || '',
-          cliente: row['Cliente'] || row['CLIENTE'] || '',
-          responsable: row['Responsable I'] || '',
-          tipoTarea: row['Tipo Tarea'] || '',
-          estado: row['Estado'] || '',
-          vencimiento: row['Vencimiento'] || '',
-          diasVencimiento: row['Días para Vencimiento'] || '',
-          estadoVencimiento: row['Estado_1'] || row['Estado'] || '' // Handle duplicate column names if needed, parseCSV might append _1
-        }));
+          .map((row, i) => {
+            // Column J is index 9. We try to find it by name or by index suffix
+            const situacion = row['Situación'] || row['SITUACIÓN'] || row['Situacion'] || row['SITUACION'] || 
+                             row['Estado_9'] || row['Estado_1'] || row['Estado'] || '';
+            
+            return {
+              id: `pl-${i}`,
+              fecha: row['Fecha'] || '',
+              cuit: row['CUIT'] || '',
+              tipoCliente: row['TIPO CLIENTE'] || '',
+              cliente: row['Cliente'] || row['CLIENTE'] || '',
+              responsable: row['Responsable I'] || '',
+              tipoTarea: row['Tipo Tarea'] || '',
+              estado: row['Estado'] || '',
+              vencimiento: row['Vencimiento'] || '',
+              diasVencimiento: row['Días para Vencimiento'] || '',
+              estadoVencimiento: situacion
+            };
+          });
         setPlanningTasks(mappedPlanning);
       }
     } catch (e: any) {
