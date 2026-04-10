@@ -1003,14 +1003,14 @@ const App: React.FC = () => {
     const filteredTasks = planningTasks.filter(t => {
       const matchesPeriod = planningPeriodFilter === 'Todos' || t.fecha === planningPeriodFilter;
       const matchesResp = planningRespFilter === 'Todos' || t.responsable === planningRespFilter;
-      const matchesStatus = planningStatusFilter === 'Todos' || t.estado === planningStatusFilter;
+      const matchesStatus = planningStatusFilter === 'Todos' || t.estadoVencimiento === planningStatusFilter;
       const matchesTaskType = planningTaskTypeFilter === 'Todos' || t.tipoTarea === planningTaskTypeFilter;
       return matchesPeriod && matchesResp && matchesStatus && matchesTaskType;
     });
 
     const periods = Array.from(new Set(planningTasks.map(t => t.fecha))).filter(Boolean).sort();
     const responsibles = Array.from(new Set(planningTasks.map(t => t.responsable))).filter(Boolean).sort();
-    const statuses = Array.from(new Set(planningTasks.map(t => t.estado))).filter(Boolean).sort();
+    const statuses = Array.from(new Set(planningTasks.map(t => t.estadoVencimiento))).filter(Boolean).sort();
     const taskTypes = Array.from(new Set(planningTasks.map(t => t.tipoTarea))).filter(Boolean).sort();
 
     return (
