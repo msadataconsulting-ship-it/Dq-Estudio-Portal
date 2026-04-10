@@ -52,7 +52,7 @@ import {
 
 // --- CONFIGURACIÓN DE GOOGLE SHEETS ---
 const PUB_TOKEN = "2PACX-1vTq_9cW8O3hFcZnwQ10MrqHWUfGQQQL-WAXumoRQfmFd7KlxwjTh1y6rIY_wBfNhiu4gJzi4cDH49SK";
-const BASE_PUB_URL = `https://docs.google.com/spreadsheets/d/e/${PUB_TOKEN}/pub?output=csv`;
+const BASE_PUB_URL = `https://docs.google.com/spreadsheets/d/e/${PUB_TOKEN}/pub?output=csv&single=true`;
 
 const CLIENTES_URL = `${BASE_PUB_URL}&gid=0`;
 const DOCUMENTACION_URL = `${BASE_PUB_URL}&gid=1793561725`;
@@ -106,6 +106,7 @@ const App: React.FC = () => {
   const [planningPeriodFilter, setPlanningPeriodFilter] = useState('Todos');
   const [planningRespFilter, setPlanningRespFilter] = useState('Todos');
   const [planningStatusFilter, setPlanningStatusFilter] = useState('Todos');
+  const [planningTaskTypeFilter, setPlanningTaskTypeFilter] = useState('Todos');
   const [docTypeFilter, setDocTypeFilter] = useState('Todos');
   const [distributionFilter, setDistributionFilter] = useState<'Todos' | 'Sociedad' | 'Responsable Inscripto' | 'Monotributo'>('Todos');
 
@@ -117,7 +118,7 @@ const App: React.FC = () => {
       const { data, error } = await supabase
         .from('tickets')
         .select('*')
-        .order('createdAt', { ascending: false });
+        .order('created_at', { ascending: false });
       
       if (error) throw error;
       if (data) setTickets(data as Ticket[]);
@@ -159,8 +160,14 @@ const App: React.FC = () => {
       let inQuotes = false;
       for (let i = 0; i < line.length; i++) {
         const char = line[i];
-        if (char === '"') inQuotes = !inQuotes;
-        else if (char === delimiter && !inQuotes) {
+        if (char === '"') {
+          if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === delimiter && !inQuotes) {
           result.push(current.trim());
           current = '';
         } else {
@@ -176,7 +183,14 @@ const App: React.FC = () => {
       const values = parseLine(line);
       const obj: any = {};
       headers.forEach((header, i) => {
-        obj[header] = values[i]?.replace(/^"|"$/g, '').trim() || '';
+        const h = header.trim();
+        const val = values[i]?.replace(/^"|"$/g, '').trim() || '';
+        // Store all values, but if duplicate header, prefer non-empty value
+        if (obj[h] === undefined || (obj[h] === '' && val !== '')) {
+          obj[h] = val;
+        }
+        // Also store with index to ensure no data is lost
+        obj[`${h}_${i}`] = val;
       });
       return obj;
     });
@@ -186,59 +200,92 @@ const App: React.FC = () => {
   const syncData = async () => {
     setLoading(true);
     try {
-      console.log("Syncing clients from:", CLIENTES_URL);
-      const resCl = await fetch(CLIENTES_URL);
-      if (!resCl.ok) throw new Error(`Error al obtener clientes: ${resCl.statusText}`);
-      const csvCl = await resCl.text();
+      const fetchWithRetry = async (url: string, label: string) => {
+        const response = await fetch(`${url}&t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`Error al obtener ${label} (Status: ${response.status} ${response.statusText || ''})`);
+        }
+        return await response.text();
+      };
+
+      console.log("Syncing clients...");
+      const csvCl = await fetchWithRetry(CLIENTES_URL, 'clientes');
       const parsedCl = parseCSV(csvCl);
       
       if (!parsedCl.isHtml) {
+        const getVal = (row: any, key: string) => {
+          const normalizedKey = key.toUpperCase().trim();
+          let firstFound = '';
+          // Search all keys in the row object
+          for (const k of Object.keys(row)) {
+            // Remove index suffix if present (e.g. "ESTADO CLIENTE_42" -> "ESTADO CLIENTE")
+            const baseKey = k.replace(/_\d+$/, '').toUpperCase().trim();
+            if (baseKey === normalizedKey) {
+              const val = row[k]?.toString().trim();
+              if (val) return val; // Return first non-empty value found
+              if (firstFound === '') firstFound = val;
+            }
+          }
+          return firstFound;
+        };
+
         const mappedClients: Client[] = parsedCl.rows
-          .filter(row => (row['CLIENTE'] || row['Cliente'])?.trim())
-          .map((row, i) => ({
-          id: `c-${i}`,
-          cuit: row['CUIT'] || '',
-          cuitSociedad: row['CUIT SOCIEDAD'] || '',
-          name: row['CLIENTE'] || 'Sin Nombre',
-          type: row['TIPO DE CLIENTE'] || 'S/D',
-          status: normalizeStr(row['ESTADO CLIENTE']).includes('ACTIVO') ? 'Activo' : 'Baja',
-          phone: row['TELEFONO1'] || '',
-          phone2: row['TELEFONO 2'] || '',
-          whatsapp: row['WHATSAPP'] || '',
-          email: row['MAIL'] || '',
-          appPassword: row['Contraseña App'] || '',
-          hasEmployees: normalizeStr(row['TIENE EMPLEADOS']) === 'SI',
-          employeeCount: parseInt(row['CANTIDAD EMPLEADOS']) || 0,
-          mainActivity: row['ACTIVIDAD PRINCIPAL'] || 'N/A',
-          hasLocal: normalizeStr(row['LOCAL COMERCIAL']) === 'SI',
-          monotributoCategory: row['CATEGORIA MONOTRIBUTO'] || 'N/A',
-          tributoCategory: row['CATEGORIA TRIBUTO'] || 'N/A',
-          address: row['DIRECCIÓN'] || '',
-          location: row['LOCALIDAD'] || '',
-          province: row['PROVINCIA'] || '',
-          dqSede: row['SEDE CLIENTE'] || 'Sede Lomas',
-          mainBank: row['BANCO'] || '',
-          claveAfip: row['CLAVE AFIP'] || '',
-          claveAgip: row['CLAVE AGIP'] || '',
-          claveArba: row['CLAVE ARBA'] || '',
-          cuentaMuni: row['CUENTA MUNI'] || '',
-          claveMuni: row['CLAVE MUNI'] || '',
-          claveSindicatos: row['CLAVE SINDICATOS'] || '',
-          fechaAlta: row['FECHA DE ALTA CLIENTE'] || '',
-          usuarioCreacion: row['USUARIO DE CREACION'] || '',
-          fechaBaja: row['FECHA DE BAJA CLIENTE'] || '',
-          motivoBaja: row['MOTIVO DE BAJA'] || '',
-          usuarioBaja: row['USUARIO DE BAJA'] || '',
-          assignedStaffId: row['Responsable del cliente'] || 'N/A',
-          taxConfig: []
-        }));
+          .filter(row => (getVal(row, 'CLIENTE'))?.trim())
+          .map((row, i) => {
+            const statusRaw = getVal(row, 'ESTADO CLIENTE');
+            const statusStr = normalizeStr(statusRaw);
+            const fechaBajaRaw = getVal(row, 'FECHA DE BAJA CLIENTE');
+            const fechaBaja = fechaBajaRaw.toString().trim();
+            
+            // Robust status check: must contain ACTIVO, not contain INACTIVO/BAJA, and have no fecha de baja
+            const isActivo = statusStr.includes('ACTIVO') && 
+                             !statusStr.includes('INACTIVO') && 
+                             !statusStr.includes('BAJA') && 
+                             !fechaBaja;
+
+            return {
+              id: `c-${i}`,
+              cuit: getVal(row, 'CUIT'),
+              cuitSociedad: getVal(row, 'CUIT SOCIEDAD'),
+              name: getVal(row, 'CLIENTE') || 'Sin Nombre',
+              type: getVal(row, 'TIPO DE CLIENTE') || 'S/D',
+              status: isActivo ? 'Activo' : 'Baja',
+              phone: getVal(row, 'TELEFONO1'),
+              phone2: getVal(row, 'TELEFONO 2'),
+              whatsapp: getVal(row, 'WHATSAPP'),
+              email: getVal(row, 'MAIL'),
+              appPassword: getVal(row, 'Contraseña App'),
+              hasEmployees: normalizeStr(getVal(row, 'TIENE EMPLEADOS')) === 'SI',
+              employeeCount: parseInt(getVal(row, 'CANTIDAD EMPLEADOS')) || 0,
+              mainActivity: getVal(row, 'ACTIVIDAD PRINCIPAL') || 'N/A',
+              hasLocal: normalizeStr(getVal(row, 'LOCAL COMERCIAL')) === 'SI',
+              monotributoCategory: getVal(row, 'CATEGORIA MONOTRIBUTO') || 'N/A',
+              tributoCategory: getVal(row, 'CATEGORIA TRIBUTO') || 'N/A',
+              address: getVal(row, 'DIRECCIÓN'),
+              location: getVal(row, 'LOCALIDAD'),
+              province: getVal(row, 'PROVINCIA'),
+              dqSede: getVal(row, 'SEDE CLIENTE') || 'Sede Lomas',
+              mainBank: getVal(row, 'BANCO'),
+              claveAfip: getVal(row, 'CLAVE AFIP'),
+              claveAgip: getVal(row, 'CLAVE AGIP'),
+              claveArba: getVal(row, 'CLAVE ARBA'),
+              cuentaMuni: getVal(row, 'CUENTA MUNI'),
+              claveMuni: getVal(row, 'CLAVE MUNI'),
+              claveSindicatos: getVal(row, 'CLAVE SINDICATOS'),
+              fechaAlta: getVal(row, 'FECHA DE ALTA CLIENTE'),
+              usuarioCreacion: getVal(row, 'USUARIO DE CREACION'),
+              fechaBaja: fechaBaja,
+              motivoBaja: getVal(row, 'MOTIVO DE BAJA'),
+              usuarioBaja: getVal(row, 'USUARIO DE BAJA'),
+              assignedStaffId: getVal(row, 'Responsable del cliente') || 'N/A',
+              taxConfig: []
+            };
+          });
         setClients(mappedClients);
       }
 
-      console.log("Syncing documentation from:", DOCUMENTACION_URL);
-      const resDoc = await fetch(DOCUMENTACION_URL);
-      if (!resDoc.ok) throw new Error(`Error al obtener documentación: ${resDoc.statusText}`);
-      const csvDoc = await resDoc.text();
+      console.log("Syncing documentation...");
+      const csvDoc = await fetchWithRetry(DOCUMENTACION_URL, 'documentación');
       const parsedDoc = parseCSV(csvDoc);
       
       if (!parsedDoc.isHtml) {
@@ -264,10 +311,8 @@ const App: React.FC = () => {
         setAllDocuments(transformed);
       }
 
-      console.log("Syncing planning from:", PLANNING_URL);
-      const resPl = await fetch(PLANNING_URL);
-      if (!resPl.ok) throw new Error(`Error al obtener planning: ${resPl.statusText}`);
-      const csvPl = await resPl.text();
+      console.log("Syncing planning...");
+      const csvPl = await fetchWithRetry(PLANNING_URL, 'planning');
       const parsedPl = parseCSV(csvPl);
       
       if (!parsedPl.isHtml) {
@@ -953,12 +998,14 @@ const App: React.FC = () => {
       const matchesPeriod = planningPeriodFilter === 'Todos' || t.fecha === planningPeriodFilter;
       const matchesResp = planningRespFilter === 'Todos' || t.responsable === planningRespFilter;
       const matchesStatus = planningStatusFilter === 'Todos' || t.estado === planningStatusFilter;
-      return matchesPeriod && matchesResp && matchesStatus;
+      const matchesTaskType = planningTaskTypeFilter === 'Todos' || t.tipoTarea === planningTaskTypeFilter;
+      return matchesPeriod && matchesResp && matchesStatus && matchesTaskType;
     });
 
     const periods = Array.from(new Set(planningTasks.map(t => t.fecha))).filter(Boolean).sort();
     const responsibles = Array.from(new Set(planningTasks.map(t => t.responsable))).filter(Boolean).sort();
     const statuses = Array.from(new Set(planningTasks.map(t => t.estado))).filter(Boolean).sort();
+    const taskTypes = Array.from(new Set(planningTasks.map(t => t.tipoTarea))).filter(Boolean).sort();
 
     return (
       <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -990,6 +1037,18 @@ const App: React.FC = () => {
               >
                 <option value="Todos">Responsable</option>
                 {responsibles.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
+              <Hash size={16} className="ml-3 text-slate-400" />
+              <select 
+                value={planningTaskTypeFilter}
+                onChange={(e) => setPlanningTaskTypeFilter(e.target.value)}
+                className="bg-transparent border-none text-[9px] font-black uppercase tracking-widest text-slate-600 focus:ring-0 cursor-pointer pr-8"
+              >
+                <option value="Todos">Tipo de Tarea</option>
+                {taskTypes.map(tt => <option key={tt} value={tt}>{tt}</option>)}
               </select>
             </div>
 
