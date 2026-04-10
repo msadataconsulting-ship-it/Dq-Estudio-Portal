@@ -56,7 +56,7 @@ const BASE_PUB_URL = `https://docs.google.com/spreadsheets/d/e/${PUB_TOKEN}/pub?
 
 const CLIENTES_URL = `${BASE_PUB_URL}&gid=0`;
 const DOCUMENTACION_URL = `${BASE_PUB_URL}&gid=1793561725`;
-const PLANNING_URL = `${BASE_PUB_URL}&gid=2064992375`;
+const PLANNING_URL = `${BASE_PUB_URL}&gid=1156824379`;
 
 const DQLogo: React.FC<{ size?: number; showText?: boolean }> = ({ size = 120, showText = true }) => (
   <div className="flex flex-col items-center">
@@ -98,10 +98,14 @@ const App: React.FC = () => {
   const [newTicket, setNewTicket] = useState({ title: '', description: '' });
   
   const [statusFilter, setStatusFilter] = useState<'Todos' | 'Activo' | 'Baja'>('Activo');
+  const [nominaTypeFilter, setNominaTypeFilter] = useState('Todos');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [docPeriodFilter, setDocPeriodFilter] = useState('Todos');
+  const [docClientFilter, setDocClientFilter] = useState('');
   const [planningPeriodFilter, setPlanningPeriodFilter] = useState('Todos');
+  const [planningRespFilter, setPlanningRespFilter] = useState('Todos');
+  const [planningStatusFilter, setPlanningStatusFilter] = useState('Todos');
   const [docTypeFilter, setDocTypeFilter] = useState('Todos');
   const [distributionFilter, setDistributionFilter] = useState<'Todos' | 'Sociedad' | 'Responsable Inscripto' | 'Monotributo'>('Todos');
 
@@ -189,7 +193,9 @@ const App: React.FC = () => {
       const parsedCl = parseCSV(csvCl);
       
       if (!parsedCl.isHtml) {
-        const mappedClients: Client[] = parsedCl.rows.map((row, i) => ({
+        const mappedClients: Client[] = parsedCl.rows
+          .filter(row => (row['CLIENTE'] || row['Cliente'])?.trim())
+          .map((row, i) => ({
           id: `c-${i}`,
           cuit: row['CUIT'] || '',
           cuitSociedad: row['CUIT SOCIEDAD'] || '',
@@ -265,13 +271,20 @@ const App: React.FC = () => {
       const parsedPl = parseCSV(csvPl);
       
       if (!parsedPl.isHtml) {
-        const mappedPlanning: PlanningTask[] = parsedPl.rows.map((row, i) => ({
+        const mappedPlanning: PlanningTask[] = parsedPl.rows
+          .filter(row => (row['Cliente'] || row['CLIENTE'])?.trim())
+          .map((row, i) => ({
           id: `pl-${i}`,
+          fecha: row['Fecha'] || '',
+          cuit: row['CUIT'] || '',
+          tipoCliente: row['TIPO CLIENTE'] || '',
           cliente: row['Cliente'] || row['CLIENTE'] || '',
           responsable: row['Responsable I'] || '',
-          fecha: row['Fecha'] || '',
-          tarea: row['Tarea'] || '',
-          estado: row['Estado'] || ''
+          tipoTarea: row['Tipo Tarea'] || '',
+          estado: row['Estado'] || '',
+          vencimiento: row['Vencimiento'] || '',
+          diasVencimiento: row['Días para Vencimiento'] || '',
+          estadoVencimiento: row['Estado_1'] || row['Estado'] || '' // Handle duplicate column names if needed, parseCSV might append _1
         }));
         setPlanningTasks(mappedPlanning);
       }
@@ -374,9 +387,19 @@ const App: React.FC = () => {
     return clients.filter(c => {
       const matchesStatus = statusFilter === 'Todos' || c.status === statusFilter;
       const matchesSearch = c.name.toLowerCase().includes(searchQuery.toLowerCase()) || c.cuit.includes(searchQuery);
-      return matchesStatus && matchesSearch;
+      
+      let matchesType = true;
+      if (nominaTypeFilter !== 'Todos') {
+        const typeUpper = c.type.toUpperCase();
+        if (nominaTypeFilter === 'Monotributo') matchesType = typeUpper.includes('MONOTRIBUTO');
+        else if (nominaTypeFilter === 'Responsable Inscripto') matchesType = typeUpper.includes('RESPONSABLE');
+        else if (nominaTypeFilter === 'Sociedad') matchesType = typeUpper.includes('SOCIEDAD');
+        else if (nominaTypeFilter === 'Otros') matchesType = !typeUpper.includes('MONOTRIBUTO') && !typeUpper.includes('RESPONSABLE') && !typeUpper.includes('SOCIEDAD');
+      }
+
+      return matchesStatus && matchesSearch && matchesType;
     });
-  }, [clients, statusFilter, searchQuery]);
+  }, [clients, statusFilter, searchQuery, nominaTypeFilter]);
 
   const adminStats = useMemo(() => {
     const activeClientsList = clients.filter(c => c.status === 'Activo');
@@ -496,14 +519,15 @@ const App: React.FC = () => {
       : allDocuments;
     return docs.filter(d => {
       const matchesPeriod = docPeriodFilter === 'Todos' || d.periodo === docPeriodFilter;
+      const matchesClient = docClientFilter === '' || d.clientName.toLowerCase().includes(docClientFilter.toLowerCase());
       const docNameUpper = d.name.toUpperCase();
       let matchesType = false;
       if (docTypeFilter === 'Todos') matchesType = true;
       else if (docTypeFilter === 'INGRESOS BRUTOS') matchesType = docNameUpper.includes('INGRESOS BRUTOS') || docNameUpper.includes('IIBB');
       else matchesType = docNameUpper.includes(docTypeFilter.toUpperCase());
-      return matchesPeriod && matchesType;
+      return matchesPeriod && matchesType && matchesClient;
     });
-  }, [allDocuments, docPeriodFilter, docTypeFilter, currentUser, currentClientData]);
+  }, [allDocuments, docPeriodFilter, docTypeFilter, docClientFilter, currentUser, currentClientData]);
 
   // Service Desk Component
   const renderServiceDesk = () => {
@@ -668,6 +692,22 @@ const App: React.FC = () => {
             </select>
           </div>
         </div>
+
+        {currentUser?.role === UserRole.ADMIN && (
+          <div className="flex-1 flex items-center gap-4 bg-slate-50 px-6 py-4 rounded-2xl border border-slate-200 group focus-within:border-amber-500/50 transition-all">
+            <Search size={18} className="text-slate-400 group-focus-within:text-amber-600" />
+            <div className="flex flex-col flex-1">
+              <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1 mb-1">Buscar Cliente</label>
+              <input 
+                type="text"
+                placeholder="NOMBRE DE EMPRESA..."
+                value={docClientFilter}
+                onChange={(e) => setDocClientFilter(e.target.value)}
+                className="bg-transparent text-[10px] font-black uppercase text-slate-900 outline-none w-full placeholder:text-slate-300 tracking-widest"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-[2rem] md:rounded-[3rem] border border-slate-200 overflow-hidden shadow-xl">
@@ -910,78 +950,130 @@ const App: React.FC = () => {
 
   const renderPlanningTasks = () => {
     const filteredTasks = planningTasks.filter(t => {
-      const matchesStatus = t.estado.toUpperCase().includes('PENDIENTE');
       const matchesPeriod = planningPeriodFilter === 'Todos' || t.fecha === planningPeriodFilter;
-      return matchesStatus && matchesPeriod;
-    });
-
-    const groupedByResponsible: Record<string, PlanningTask[]> = {};
-    filteredTasks.forEach(t => {
-      const resp = t.responsable || 'Sin Asignar';
-      if (!groupedByResponsible[resp]) groupedByResponsible[resp] = [];
-      groupedByResponsible[resp].push(t);
+      const matchesResp = planningRespFilter === 'Todos' || t.responsable === planningRespFilter;
+      const matchesStatus = planningStatusFilter === 'Todos' || t.estado === planningStatusFilter;
+      return matchesPeriod && matchesResp && matchesStatus;
     });
 
     const periods = Array.from(new Set(planningTasks.map(t => t.fecha))).filter(Boolean).sort();
+    const responsibles = Array.from(new Set(planningTasks.map(t => t.responsable))).filter(Boolean).sort();
+    const statuses = Array.from(new Set(planningTasks.map(t => t.estado))).filter(Boolean).sort();
 
     return (
       <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div>
             <h3 className="text-3xl font-black text-slate-900 uppercase tracking-tighter">Seguimiento de Tareas</h3>
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Resumen de tareas pendientes por responsable</p>
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Visualización de tareas importadas desde el Portal</p>
           </div>
           
-          <div className="flex items-center gap-4 bg-white p-2 rounded-[2rem] border border-slate-200 shadow-sm">
-            <Filter size={16} className="ml-4 text-slate-400" />
-            <select 
-              value={planningPeriodFilter}
-              onChange={(e) => setPlanningPeriodFilter(e.target.value)}
-              className="bg-transparent border-none text-[10px] font-black uppercase tracking-widest text-slate-600 focus:ring-0 cursor-pointer pr-10"
-            >
-              <option value="Todos">Todos los Períodos</option>
-              {periods.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
+              <Calendar size={16} className="ml-3 text-slate-400" />
+              <select 
+                value={planningPeriodFilter}
+                onChange={(e) => setPlanningPeriodFilter(e.target.value)}
+                className="bg-transparent border-none text-[9px] font-black uppercase tracking-widest text-slate-600 focus:ring-0 cursor-pointer pr-8"
+              >
+                <option value="Todos">Período</option>
+                {periods.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
+              <UserIcon size={16} className="ml-3 text-slate-400" />
+              <select 
+                value={planningRespFilter}
+                onChange={(e) => setPlanningRespFilter(e.target.value)}
+                className="bg-transparent border-none text-[9px] font-black uppercase tracking-widest text-slate-600 focus:ring-0 cursor-pointer pr-8"
+              >
+                <option value="Todos">Responsable</option>
+                {responsibles.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-sm">
+              <Filter size={16} className="ml-3 text-slate-400" />
+              <select 
+                value={planningStatusFilter}
+                onChange={(e) => setPlanningStatusFilter(e.target.value)}
+                className="bg-transparent border-none text-[9px] font-black uppercase tracking-widest text-slate-600 focus:ring-0 cursor-pointer pr-8"
+              >
+                <option value="Todos">Estado</option>
+                {statuses.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
-          {Object.entries(groupedByResponsible).map(([resp, tasks]) => (
-            <div key={resp} className="bg-white rounded-[3rem] border border-slate-200 shadow-xl overflow-hidden flex flex-col">
-              <div className="p-8 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-2xl bg-amber-500/10 flex items-center justify-center">
-                    <UserIcon size={20} className="text-amber-600" />
-                  </div>
-                  <div>
-                    <h4 className="text-[12px] font-black uppercase tracking-widest text-slate-900">{resp}</h4>
-                    <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest">{tasks.length} Pendientes</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="p-8 space-y-4 flex-1 overflow-y-auto max-h-[400px] custom-scrollbar">
-                {tasks.map((task) => (
-                  <div key={task.id} className="p-6 bg-slate-50 rounded-3xl border border-slate-100 hover:border-amber-200 transition-all group">
-                    <div className="flex justify-between items-start mb-3">
-                      <span className="text-[9px] font-black text-amber-600 uppercase tracking-widest">{task.fecha}</span>
-                      <span className="px-3 py-1 bg-rose-50 text-rose-600 text-[8px] font-black uppercase rounded-full tracking-widest">Pendiente</span>
-                    </div>
-                    <h5 className="text-[11px] font-bold text-slate-800 uppercase leading-relaxed mb-2">{task.tarea}</h5>
-                    <p className="text-[10px] font-medium text-slate-400 uppercase tracking-tight truncate">Cliente: {task.cliente}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          
-          {Object.keys(groupedByResponsible).length === 0 && (
-            <div className="col-span-full py-32 text-center bg-white rounded-[4rem] border border-dashed border-slate-200">
-              <CheckCircle2 size={48} className="mx-auto text-emerald-500/20 mb-6" />
-              <h4 className="text-xl font-black text-slate-900 uppercase tracking-tighter">¡Todo al día!</h4>
-              <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">No hay tareas pendientes para los filtros seleccionados.</p>
-            </div>
-          )}
+        <div className="bg-white rounded-[2.5rem] border border-slate-200 shadow-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Fecha</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Cliente</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Responsable</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Tarea</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Estado</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest">Vencimiento</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center">Días</th>
+                  <th className="px-6 py-5 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right">Situación</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredTasks.length > 0 ? filteredTasks.map((task) => (
+                  <tr key={task.id} className="hover:bg-slate-50/50 transition-colors group">
+                    <td className="px-6 py-4 text-[10px] font-bold text-slate-500">{task.fecha}</td>
+                    <td className="px-6 py-4">
+                      <p className="text-[10px] font-black text-slate-900 uppercase">{task.cliente}</p>
+                      <p className="text-[8px] font-bold text-slate-400 font-mono">{task.cuit}</p>
+                    </td>
+                    <td className="px-6 py-4 text-[10px] font-bold text-slate-600 uppercase">{task.responsable}</td>
+                    <td className="px-6 py-4">
+                      <span className="px-3 py-1 bg-slate-100 text-slate-600 text-[8px] font-black uppercase rounded-full tracking-widest">
+                        {task.tipoTarea}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={`px-3 py-1 text-[8px] font-black uppercase rounded-full tracking-widest ${
+                        task.estado.toUpperCase().includes('PENDIENTE') ? 'bg-amber-50 text-amber-600' : 
+                        task.estado.toUpperCase().includes('REALIZADO') ? 'bg-emerald-50 text-emerald-600' : 
+                        'bg-slate-50 text-slate-500'
+                      }`}>
+                        {task.estado}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-[10px] font-bold text-slate-500">{task.vencimiento}</td>
+                    <td className="px-6 py-4 text-center">
+                      <span className={`text-[10px] font-mono font-bold ${
+                        parseInt(task.diasVencimiento) < 0 ? 'text-rose-600' : 'text-slate-500'
+                      }`}>
+                        {task.diasVencimiento}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <span className={`px-3 py-1 text-[8px] font-black uppercase rounded-full tracking-widest ${
+                        task.estadoVencimiento.toUpperCase().includes('VENCIDA') ? 'bg-rose-50 text-rose-600' : 
+                        'bg-slate-50 text-slate-400'
+                      }`}>
+                        {task.estadoVencimiento}
+                      </span>
+                    </td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={8} className="py-32 text-center">
+                      <CheckCircle2 size={48} className="mx-auto text-emerald-500/20 mb-6" />
+                      <h4 className="text-xl font-black text-slate-900 uppercase tracking-tighter">Sin resultados</h4>
+                      <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">No hay tareas que coincidan con los filtros seleccionados.</p>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     );
@@ -1000,6 +1092,25 @@ const App: React.FC = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+        
+        <div className="flex items-center gap-4 bg-slate-50 px-6 py-4 rounded-2xl border border-slate-200 w-full md:w-auto">
+          <Filter size={18} className="text-slate-400" />
+          <div className="flex flex-col flex-1 min-w-[140px]">
+            <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1 mb-1">Categoría</label>
+            <select 
+              value={nominaTypeFilter}
+              onChange={(e) => setNominaTypeFilter(e.target.value)}
+              className="bg-transparent text-[10px] font-black uppercase text-slate-900 outline-none w-full appearance-none cursor-pointer"
+            >
+              <option value="Todos" className="bg-white">Todas las categorías</option>
+              <option value="Monotributo" className="bg-white">Monotributo</option>
+              <option value="Responsable Inscripto" className="bg-white">Resp. Inscripto</option>
+              <option value="Sociedad" className="bg-white">Sociedad</option>
+              <option value="Otros" className="bg-white">Otros</option>
+            </select>
+          </div>
+        </div>
+
         <div className="flex items-center gap-1 p-1 bg-slate-50 rounded-2xl border border-slate-200 w-full md:w-auto overflow-x-auto no-scrollbar">
           {(['Todos', 'Activo', 'Baja'] as const).map(f => (
             <button key={f} onClick={() => setStatusFilter(f)} className={`flex-1 md:flex-none px-6 md:px-8 py-3 rounded-xl text-[9px] md:text-[10px] font-black uppercase transition-all tracking-widest whitespace-nowrap ${statusFilter === f ? 'bg-white text-slate-900 shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}>{f}</button>
@@ -1213,7 +1324,7 @@ const App: React.FC = () => {
           <div className="w-full flex justify-between items-start">
             <div>
               <h2 className="text-3xl md:text-5xl font-black text-slate-900 uppercase tracking-tighter mb-4">
-                {currentTab === 'dashboard' ? 'Panel Administrador' : currentTab === 'nomina' ? 'Nómina Global' : currentTab === 'documentation' ? 'Archivo Digital' : currentTab === 'mis-datos' ? 'Mi Perfil' : currentTab === 'service-desk' ? 'Service Desk' : 'Agenda Fiscal'}
+                {currentTab === 'dashboard' ? 'Panel Administrador' : currentTab === 'nomina' ? 'Nómina Global' : currentTab === 'documentation' ? 'Archivo Digital' : currentTab === 'mis-datos' ? 'Mi Perfil' : currentTab === 'service-desk' ? 'Service Desk' : 'Seguimiento Tareas'}
               </h2>
               <div className="flex items-center gap-4 text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">
                 <span className="flex items-center gap-2"><Shield size={14} className="text-amber-600" /> DQ Estudio Integral</span>

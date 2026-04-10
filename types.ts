@@ -126,9 +126,14 @@ export interface Task {
 
 export interface PlanningTask {
   id: string;
+  fecha: string;
+  cuit: string;
+  tipoCliente: string;
   cliente: string;
   responsable: string;
-  fecha: string;
-  tarea: string;
+  tipoTarea: string;
   estado: string;
+  vencimiento: string;
+  diasVencimiento: string;
+  estadoVencimiento: string;
 }
